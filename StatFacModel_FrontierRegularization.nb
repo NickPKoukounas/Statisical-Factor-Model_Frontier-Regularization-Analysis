@@ -1,4 +1,15 @@
-
+(*Needed For Missing Data Analysis*)
+xEndOfMonth[{y_, m_, d_}] := 
+  If[m == 12, {y, m, 31}, First@DayPlus[{y, m + 1, 1}, -1]];
+xExpandCalendar[vxCalendar_, vxSeries_] := Sort[
+   Join[
+    vxSeries,
+    Transpose[{#, Array[Missing[] &, Length[#]]}] &[
+     Complement[vxCalendar, First /@ vxSeries]
+     ]
+    ]
+   ];
+  
 (*Investment Universe*)
 
 (*The investment universe is composed of ETFs designed to mirror broad market segments. It contains investments in domestic and foreign equities, bonds, and realestate.*)
