@@ -1,0 +1,302 @@
+
+(*Investment Universe*)
+
+(*The investment universe is composed of ETFs designed to mirror broad market segments. It contains investments in domestic and foreign equities, bonds, and realestate.*)
+
+ vsTickers = {"EEM", "EFA", "EWJ", "IEF", "IEV", "IVV", "RWR", "SHY", "TLT", 
+  "VTI"}
+
+vsNames = FinancialData[#, "Name"] & /@ vsTickers;
+
+TableForm[{vsTickers, vsNames}\[Transpose], 
+ TableHeadings -> {Range[Length[vsTickers]]}]
+mnDateRange = {{2000, 04, 1}, {2025, 03, 31}};
+
+
+(*Closing Price Data Daily*)
+
+buffer = FinancialData[#, "Close", mnDateRange, Method -> "Legacy"] & /@ 
+   vsTickers;
+
+Dimensions /@ buffer
+
+And @@ (FreeQ[#, _Missing] & /@ buffer)
+
+(*Calculate Monthly*)
+
+vmxMonthlyPrices = (Last /@ Split[#, (#1[[1, 2]] == #2[[1, 2]]) &]) & /@ 
+   buffer;
+
+Dimensions /@ vmxMonthlyPrices
+
+DateListLogPlot[vmxMonthlyPrices[[7]], PlotLabel -> vsNames[[7]]]
+
+vmxReturns = {xEndOfMonth /@ 
+       Rest[First /@ #], (Rest[#]/Most[#] - 1 &)[
+       Last /@ #]}\[Transpose] & /@ vmxMonthlyPrices;
+Dimensions /@ vmxReturns
+
+vxCalendar = Union[Flatten[#[[All, 1]] & /@ vmxReturns, 1]];
+
+Length@vxCalendar
+
+ToString[vxCalendar[[;; 3]]] <> "...\n\t" <> 
+ ToString[vxCalendar[[-3 ;;]]]
+
+DateListLogPlot[1 + vmxReturns[[1]], PlotLabel -> vsNames[[1]], 
+ PlotRange -> All]
+
+vmxRepaired = xExpandCalendar[vxCalendar, #] & /@ vmxReturns;
+
+Dimensions /@ vmxRepaired
+
+vmxRepaired[[1, ;; 4]]
+
+dbWorkshopReturns = {
+   vxCalendar,
+   vsTickers,
+   Transpose[#[[All, 2]] & /@ vmxRepaired]
+   };
+
+Dimensions /@ dbWorkshopReturns
+
+(*Missing Data Analysis*)
+
+Framed@ArrayPlot[
+  Map[Boole@FreeQ[#, _Missing] &, dbWorkshopReturns[[3]], {2}],
+  ImageSize -> 250,
+  Mesh -> True,
+  ColorFunction -> (\[FormalX] |-> If[\[FormalX] == 1, Green, Red]),
+  Frame -> True ,
+  FrameLabel -> {{"Fund", Style["ETFs", FontSize -> 16]}, {"Month", 
+     ""}},
+  FrameTicks -> {{Rest@Range[0, Length[dbWorkshopReturns[[1]]], 20], 
+     None}, {None, {Range[Length[#]], #}\[Transpose] &[
+      Rotate[#, 90 Degree] & /@ dbWorkshopReturns[[2]]]}}
+  ]
+
+(*Initial Mean and Covariance Estimation*)
+
+?xMeanCovMissingMLE
+
+{{vnMean, mnCovariance}, {mnCompleted, mnCross}, vnLogLik, sRunID} = 
+  xMeanCovMissingMLE[dbWorkshopReturns];
+
+ListPlot[vnLogLik, Joined -> True, PlotRange -> All]
+
+FreeQ[mnCompleted, _Missing]
+
+Use mnCompleted to replace dbWorkshopReturns[[3]] which is the completed data set.
+
+dbWorkshopReturns = {
+   dbWorkshopReturns[[1]],
+   dbWorkshopReturns[[2]],
+   mnCompleted
+   };
+FreeQ[dbWorkshopReturns, _Missing]
+mnCov = Covariance[dbWorkshopReturns[[3]]];
+Dimensions[mnCov]
+
+vnMean = Mean[dbWorkshopReturns[[3]]]
+Dimensions[vnMean]
+
+(*Statistical Factor Model*)
+?xFactorFitMLE
+
+mnBIC = Table[{i, 
+   Last@xFactorFitMLE[Length[dbWorkshopReturns[[3]]], mnCov, 
+     xInitializeFactorModel[mnCov, i]]}, {i, 1, 10}]
+
+ListLinePlot[mnBIC, Mesh -> All]
+
+MinimalBy[mnBIC, Last]
+
+iorder = 6;
+{{mnFactors, mnErrDiag}, vnLogLikHistory, nBIC} = 
+  xFactorFitMLE[Length[dbWorkshopReturns[[3]]], mnCov, 
+   xInitializeFactorModel[mnCov, iorder]];
+
+FCov = mnFactors . Transpose[mnFactors] + mnErrDiag;
+MatrixForm[FCov]
+Det[FCov]/Det[mnCov]
+
+(*Efficient Portfolios and Frontier with Regularization*)
+
+(*Training and Testing sets using k-fold*)
+RandomSeed[134]
+xvTrainingIndices = 
+  RandomSample[Range[Length[dbWorkshopReturns[[3]]]], 
+   Round[0.7*Length[dbWorkshopReturns[[3]]]]];
+xvTestingIndices = 
+  Complement[Range[Length[dbWorkshopReturns[[3]]]], xvTrainingIndices];
+xvTrainingSet = dbWorkshopReturns[[3]][[xvTrainingIndices]];
+xvTestingSet = dbWorkshopReturns[[3]][[xvTestingIndices]];
+Length[xvTrainingSet]
+Length[xvTestingSet]
+
+nRows = Length[xvTrainingSet]; 
+kFolds = 5;
+
+shuffledTrainingIndices = RandomSample[Range[nRows]];
+
+foldSize = Floor[nRows/kFolds];
+extra = Mod[nRows, kFolds];
+
+xvFoldsIndices = {};
+
+start = 1;
+Do[end = start + foldSize - 1 + If[i <= extra, 1, 0];
+  AppendTo[xvFoldsIndices, Range[start, end]];
+  start = end + 1, {i, kFolds}];
+
+xvFolds = 
+  xvTrainingSet[[#]] & /@ (shuffledTrainingIndices[[#]] & /@ 
+     xvFoldsIndices);
+
+Length[#] & /@ xvFolds
+
+(*Regularization using Shrinkage*)
+(*Use k-fold cross validation with k=5 to select the value of the hyperparameters Gamma and Lambda below.*)
+
+(*Mean*)
+
+gammaVals = Range[0, 1, 0.05];
+gammaErrors = Association[];
+
+Do[foldErrors = 
+  Table[Module[{trainSet, valSet, muTrain, grandMuTrain, muShrink, 
+     muVal, mse}, trainSet = Flatten[Delete[xvFolds, i], 1];
+    valSet = xvFolds[[i]];
+    muTrain = Mean /@ Transpose[trainSet];
+    grandMuTrain = Mean[muTrain];
+    muShrink = (1 - gamma)*muTrain + gamma*grandMuTrain;
+    muVal = Mean /@ Transpose[valSet];
+    mse = Mean[(muShrink - muVal)^2];
+    mse], {i, 1, Length[xvFolds]}];
+ gammaErrors[gamma] = Mean[foldErrors], {gamma, gammaVals}]
+ListLinePlot[gammaErrors]
+MinimalBy[gammaErrors, Last]
+
+Gam = 1; (*Lowest MSE is 1*)
+ShrinkMean =  (1 - Gam) * Mean[xvTrainingSet] + (Gam)* 
+    Mean[Mean[xvTrainingSet]];
+
+(*Covariance*)
+lambdaVals = Range[0, 1, 0.05];
+lambdaErrors = Association[];
+Do[foldErrors = 
+  Table[Module[{trainSet, valSet, CovTrain, grandDiagTrain, CovShrink,
+      CovVal, mse}, trainSet = Join @@ Delete[xvFolds, i];
+    valSet = xvFolds[[i]];
+    CovTrain = Covariance[trainSet];
+    grandDiagTrain = Mean[Diagonal[CovTrain]];
+    CovShrink = (1 - lambda) CovTrain + 
+      lambda grandDiagTrain IdentityMatrix[Length[CovTrain]];
+    CovVal = Covariance[valSet];
+    mse = Mean[(Flatten[CovShrink - CovVal])^2];
+    mse], {i, 1, Length[xvFolds]}];
+ lambdaErrors[lambda] = Mean[foldErrors], {lambda, lambdaVals}]
+
+ListLinePlot[lambdaErrors]
+MinimalBy[lambdaErrors, Last]
+
+buffercov = Covariance[xvTrainingSet];
+MeanCovTrain = 
+  Mean[Diagonal[buffercov]] IdentityMatrix[Length[buffercov]];
+ShrinkCov = (1 - .05) buffercov + .05 MeanCovTrain; (*0.05 was lowest MSE*)
+MatrixForm[ShrinkCov]
+
+(*Comparing Ex Post and Ex Ante Estimates*)
+(*Test vs Train*)
+Total[(Mean[xvTestingSet] - Mean[xvTrainingSet])^2]
+(*Test vs Shrink*)
+Total[(Mean[xvTestingSet] - ShrinkMean)^2]
+
+(*Test vs Train*)
+Total[Flatten[(Covariance[xvTestingSet] - 
+     Covariance[xvTrainingSet])^2]]
+(*Test vs Shrink*)
+Total[Flatten[(Covariance[xvTestingSet] - ShrinkCov)^2]]
+
+(*Ex Post Frontiers with and without Regularization*)
+
+TrainCov = .5 ( \[FormalX] . Covariance[xvTrainingSet] . \[FormalX]);
+MeanEF = Mean[xvTrainingSet] . \[FormalX];
+ShrinkCovEF = .5 (\[FormalX] . ShrinkCov . \[FormalX]);
+Poscons = {\[FormalX] \[VectorGreaterEqual] 0, Total[\[FormalX]] == 1};
+vnExpectedReturn = Mean[xvTrainingSet];
+(*For Training Data*)
+minVarPos = \[FormalX] /. 
+   QuadraticOptimization[TrainCov, Poscons, \[FormalX], 
+    Method -> "COIN"];
+ minvarret = minVarPos .  vnExpectedReturn
+
+MaxVarPos = \[FormalX] /. 
+   QuadraticOptimization[-MeanEF, Poscons, \[FormalX], 
+    Method -> "COIN"];
+maxvarret = MaxVarPos . vnExpectedReturn
+targetConsFunc[\[Tau]_] = {vnExpectedReturn . \[FormalX] == \[Tau]};
+
+effports = 
+  Table[{\[Tau], \[FormalX] /. 
+     QuadraticOptimization[TrainCov, 
+      Join[Poscons, targetConsFunc[\[Tau]]], \[FormalX], 
+      Method -> "COIN"]}, {\[Tau], minvarret, 
+    maxvarret, (maxvarret - minvarret)/10}];
+
+
+effFrontier = 
+  Transpose[{First /@ 
+     effports, {Sqrt[# . Covariance[xvTrainingSet] . #], # . 
+        vnExpectedReturn} & /@ (Last /@ effports)}];
+
+(*For Shrikage covariance*)
+minVarPosShrink = \[FormalX] /. 
+   QuadraticOptimization[ShrinkCovEF, Poscons, \[FormalX], 
+    Method -> "COIN"];
+MinVarShrink = minVarPosShrink . vnExpectedReturn;
+effportsShrink = 
+  Table[{\[Tau], \[FormalX] /. 
+     QuadraticOptimization[ShrinkCovEF, 
+      Join[Poscons, targetConsFunc[\[Tau]]], \[FormalX], 
+      Method -> "COIN"]}, {\[Tau], MinVarShrink, 
+    maxvarret, (maxvarret - MinVarShrink)/10}];
+effFrontierShrink = 
+  Transpose[{First /@ 
+     effportsShrink, {Sqrt[# . ShrinkCov . #], # . 
+        vnExpectedReturn} & /@ (Last /@ effportsShrink)}];
+
+Show[
+ ListLinePlot[Last /@ effFrontier, Mesh -> All, 
+  PlotLabel -> Style["Efficient Frontier", FontSize -> 16], 
+  PlotLegends -> {"Regular Data"}, 
+  AxesLabel -> {"\[Sigma]", "\[Mu]"}, ImageSize -> 500, 
+  PlotRange -> All], 
+ ListLinePlot[Last /@ effFrontierShrink, Mesh -> All, 
+  PlotRange -> All, PlotStyle -> Red, 
+  PlotLegends -> {"Shrinkage Data"}]]
+
+(*Now comparing on Test Data*)
+
+muTesteff = Mean[xvTestingSet];               
+covTesteff = Covariance[xvTestingSet];              
+effFrontierTestEval = 
+  Transpose[{First /@ 
+     effports, {Sqrt[# . covTesteff . #], # . muTesteff} & /@ (Last /@
+        effports)}];
+
+effFrontierShrinkTestEval = 
+  Transpose@{First /@ 
+     effportsShrink, {Sqrt[# . covTesteff . #], 
+       muTesteff . #} & /@ (Last /@ effportsShrink)};
+
+Show[
+ ListLinePlot[Last /@ effFrontierTestEval, Mesh -> All, 
+  PlotLabel -> Style["Efficient Frontier", FontSize -> 16], 
+  AxesLabel -> {"\[Sigma]", "\[Mu]"}, ImageSize -> 500, 
+  PlotRange -> All, PlotLegends -> {"Regular Data"}], 
+ ListLinePlot[Last /@ effFrontierShrinkTestEval, Mesh -> All, 
+  PlotRange -> All, PlotStyle -> Red, 
+  PlotLegends -> {"Shrinkage Data"}]]
+
+
