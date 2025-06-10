@@ -126,13 +126,3 @@ Plots compare:
 
 * `xMeanCovMissingMLE`: MLE for missing data
 * `xFactorFitMLE`: MLE for factor model fitting
-
-
-
----
-
-## 👨‍💼 Author
-
-**Ted Koukounas**
-[GitHub](https://github.com/yourusername)
-[LinkedIn](https://linkedin.com/in/yourprofile)
