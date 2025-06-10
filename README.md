@@ -39,13 +39,12 @@ Data is collected using `FinancialData` between April 2000 and March 2025.
      * Completed return matrix
      * Estimated mean vector and covariance matrix
      * Log-likelihood progression and run ID
-     * Must import this file to use its function
+     
 ---
 
 ## Factor Model Estimation
 
 * Factor model is fit using `xFactorFitMLE`, where the number of factors is selected via BIC minimization.
-* Must import this file to use its function
 * Initialization via `xInitializeFactorModel`.
 * BIC values are computed and plotted.
 * The best model is chosen
@@ -122,7 +121,7 @@ Plots compare:
 
 ---
 
-##  Files
+##  Files from FQS Capital Management, LLP (c) 2009, 2010, 2011, 2015 
 
 * `xMeanCovMissingMLE`: MLE for missing data
 * `xFactorFitMLE`: MLE for factor model fitting
